@@ -38,20 +38,37 @@
   }
 
   function findGenerateButton() {
+    // Prefer the actual <button> ancestor of the up-arrow svg path
     const paths = document.querySelectorAll('svg path[d^="M6 11L12 5"]');
     for (const p of paths) {
-      const btn = p.closest('button') || p.closest('[role="button"]');
+      const btn = p.closest('button');
       if (btn) return btn;
+    }
+    // Fallback: any element with role=button containing the path
+    for (const p of paths) {
+      const btn = p.closest('[role="button"]');
+      if (btn) return btn;
+    }
+    // Last resort: walk up to first clickable-looking ancestor
+    for (const p of paths) {
       let el = p.parentElement;
       while (el && el !== document.body) {
-        const cls = (el.className && el.className.baseVal) || el.className || '';
-        if (typeof cls === 'string' && /rounded-full|cursor-pointer|bg-button-filled/.test(cls)) {
-          return el;
-        }
+        const cls = typeof el.className === 'string' ? el.className
+                  : (el.className && el.className.baseVal) || '';
+        if (/rounded-full|cursor-pointer|bg-button-filled/.test(cls)) return el;
         el = el.parentElement;
       }
     }
     return null;
+  }
+
+  function isButtonReady(btn) {
+    if (!btn) return false;
+    if (btn.disabled) return false;
+    if (btn.getAttribute('aria-disabled') === 'true') return false;
+    const cls = typeof btn.className === 'string' ? btn.className : '';
+    if (/disabled|opacity-0|pointer-events-none/.test(cls)) return false;
+    return true;
   }
 
   function getVideoSrc(v) {
@@ -169,8 +186,30 @@
   }
 
   async function clickGenerate() {
-    const btn = await waitFor(() => findGenerateButton(), 10000, 250);
+    // Wait until the button exists AND is enabled (grok disables it until image is ready)
+    const btn = await waitFor(() => {
+      const b = findGenerateButton();
+      return (b && isButtonReady(b)) ? b : null;
+    }, 30000, 300);
+
+    // Try a real submit first: most chat UIs listen for Enter on the editor
+    const editor = findPromptEditor();
+    if (editor) {
+      editor.focus();
+      const opts = { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 };
+      editor.dispatchEvent(new KeyboardEvent('keydown', opts));
+      editor.dispatchEvent(new KeyboardEvent('keypress', opts));
+      editor.dispatchEvent(new KeyboardEvent('keyup', opts));
+    }
+    await sleep(150);
+
+    // Verify by checking if a NEW video starts loading, otherwise click the button
     dispatchClick(btn);
+
+    // Some UIs need a click on the inner SVG too — try once more on the deepest child
+    await sleep(120);
+    const inner = btn.querySelector('svg') || btn.firstElementChild;
+    if (inner) dispatchClick(inner);
   }
 
   async function waitForNewVideo(beforeSet, timeoutMs) {
