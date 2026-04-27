@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Grok Video Batch Generator",
+  "version": "1.0.0",
+  "description": "Tu dong tao video Grok hang loat tu 1 folder anh, luu video ve cung folder.",
+  "permissions": [
+    "sidePanel",
+    "scripting",
+    "storage",
+    "tabs",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://grok.com/*",
+    "https://*.grok.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Grok Video Batch"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://grok.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

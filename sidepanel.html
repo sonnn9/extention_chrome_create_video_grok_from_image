@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Grok Video Batch</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header>
+    <h2>Grok Video Batch</h2>
+    <div class="muted small">Tạo video Grok hàng loạt từ folder ảnh</div>
+  </header>
+
+  <section>
+    <button id="pickFolder" class="primary">Chọn folder ảnh</button>
+    <div id="folderInfo" class="muted small">Chưa chọn folder</div>
+  </section>
+
+  <section>
+    <label for="prompt">Prompt <span class="muted small">(có thể dùng <code>{filename}</code>, <code>{index}</code>)</span></label>
+    <textarea id="prompt" rows="4" placeholder="VD: tạo ảnh chuyển động và đọc phiên âm tiếng Anh đầu tiên trên ảnh theo giọng anh anh, và không đọc thêm gì"></textarea>
+  </section>
+
+  <section>
+    <details>
+      <summary>Cài đặt nâng cao</summary>
+      <label class="row"><input type="checkbox" id="skipExisting" checked> Bỏ qua ảnh đã có video (.mp4 cùng tên)</label>
+      <label>Timeout mỗi video (giây)<input type="number" id="timeout" value="300" min="30" max="1800"></label>
+      <label>Số lần retry khi lỗi<input type="number" id="retry" value="2" min="0" max="10"></label>
+      <label>Delay giữa các ảnh (giây)<input type="number" id="delay" value="3" min="0" max="120"></label>
+      <label>URL trang tạo video <span class="muted small">(để trống = dùng URL hiện tại)</span><input type="text" id="resetUrl" placeholder="https://grok.com/imagine"></label>
+    </details>
+  </section>
+
+  <section class="controls">
+    <button id="startBtn" class="primary">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="clearLogBtn" class="ghost">Clear log</button>
+  </section>
+
+  <section>
+    <div id="progress" class="muted small">Sẵn sàng</div>
+    <div id="progressBar"><div id="progressBarFill"></div></div>
+  </section>
+
+  <section>
+    <div class="row spread">
+      <h3>Log</h3>
+      <span id="stats" class="muted small"></span>
+    </div>
+    <div id="log"></div>
+  </section>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
