@@ -240,6 +240,59 @@
     return { videoData: bufToBase64(buf), videoMime: blob.type || 'video/mp4', size: buf.length };
   }
 
+  function findRegenerateButton() {
+    const iconSelectors = [
+      'svg.lucide-refresh-cw', 'svg.lucide-rotate-cw',
+      'svg.lucide-rotate-ccw', 'svg.lucide-repeat', 'svg.lucide-repeat-2',
+    ];
+    for (const sel of iconSelectors) {
+      for (const ic of document.querySelectorAll(sel)) {
+        const btn = ic.closest('button, [role="button"]');
+        if (btn && isButtonReady(btn)) return btn;
+      }
+    }
+    for (const b of document.querySelectorAll('button, [role="button"]')) {
+      const t = (b.textContent || '').trim();
+      if (/^(regenerate|regen|tạo lại|generate again|làm lại)/i.test(t) && isButtonReady(b)) return b;
+    }
+    return null;
+  }
+
+  async function clearPromptEditor() {
+    const editor = findPromptEditor();
+    if (!editor) return false;
+    editor.focus();
+    await sleep(50);
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    try { document.execCommand('delete'); } catch {}
+    await sleep(80);
+    return true;
+  }
+
+  async function generateOnSamePost({ prompt, timeoutMs }) {
+    const beforeSet = snapshotVideoSrcs();
+
+    const regen = findRegenerateButton();
+    if (regen) {
+      dispatchClick(regen);
+    } else {
+      const editor = findPromptEditor();
+      if (!editor) throw new Error('Không tìm thấy ô prompt và không có nút Regenerate trên post');
+      await clearPromptEditor();
+      await fillPrompt(prompt);
+      await sleep(400);
+      await clickGenerate();
+    }
+
+    const videoUrl = await waitForNewVideo(beforeSet, timeoutMs);
+    const { videoData, videoMime, size } = await fetchVideoAsBase64(videoUrl);
+    return { videoUrl, videoData, videoMime, size };
+  }
+
   async function processImage({ fileName, fileType, fileData, prompt, timeoutMs }) {
     const bin = atob(fileData);
     const buf = new Uint8Array(bin.length);
@@ -274,6 +327,13 @@
     }
     if (msg.type === 'PROCESS_IMAGE') {
       processImage(msg).then(
+        (data) => sendResponse({ ok: true, ...data }),
+        (err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }),
+      );
+      return true; // async
+    }
+    if (msg.type === 'REGENERATE_ON_POST') {
+      generateOnSamePost(msg).then(
         (data) => sendResponse({ ok: true, ...data }),
         (err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }),
       );

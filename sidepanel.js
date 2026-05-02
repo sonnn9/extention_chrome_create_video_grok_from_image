@@ -36,6 +36,7 @@ async function loadSettings() {
   if (s.timeout) $('timeout').value = s.timeout;
   if (s.retry !== undefined) $('retry').value = s.retry;
   if (s.delay !== undefined) $('delay').value = s.delay;
+  if (s.versions !== undefined) $('versions').value = s.versions;
   if (s.skipExisting !== undefined) $('skipExisting').checked = s.skipExisting;
   if (s.resetUrl) $('resetUrl').value = s.resetUrl;
 }
@@ -47,6 +48,7 @@ async function saveSettings() {
       timeout: +$('timeout').value,
       retry: +$('retry').value,
       delay: +$('delay').value,
+      versions: +$('versions').value,
       skipExisting: $('skipExisting').checked,
       resetUrl: $('resetUrl').value.trim(),
     }
@@ -76,10 +78,9 @@ async function listImages() {
   return out;
 }
 
-async function videoExists(imageName) {
-  const base = imageName.replace(/\.[^.]+$/, '');
+async function videoExistsByBase(baseName) {
   try {
-    await dirHandle.getFileHandle(`${base}.mp4`);
+    await dirHandle.getFileHandle(`${baseName}.mp4`);
     return true;
   } catch { return false; }
 }
@@ -161,6 +162,17 @@ async function processOneImage(tabId, file, prompt, timeoutMs) {
   return result; // { ok, videoUrl, videoData, videoMime, size }
 }
 
+async function regenerateOnSamePost(tabId, prompt, timeoutMs) {
+  const result = await chrome.tabs.sendMessage(tabId, {
+    type: 'REGENERATE_ON_POST',
+    prompt,
+    timeoutMs,
+  });
+  if (!result) throw new Error('Không nhận được phản hồi từ content script');
+  if (!result.ok) throw new Error(result.error || 'Lỗi không rõ');
+  return result;
+}
+
 function base64ToBlob(b64, mime) {
   const bin = atob(b64);
   const buf = new Uint8Array(bin.length);
@@ -202,13 +214,15 @@ async function runBatch() {
   const images = await listImages();
   if (images.length === 0) { log('Folder không có ảnh', 'error'); return; }
 
-  stats = { done: 0, skipped: 0, failed: 0, total: images.length };
-  updateStats();
-
   const skipExisting = $('skipExisting').checked;
   const timeoutSec = +$('timeout').value;
   const maxRetry = +$('retry').value;
   const delaySec = +$('delay').value;
+  const versionsPerImage = Math.max(1, +$('versions').value || 1);
+
+  const totalJobs = images.length * versionsPerImage;
+  stats = { done: 0, skipped: 0, failed: 0, total: totalJobs };
+  updateStats();
 
   running = true;
   stopRequested = false;
@@ -216,57 +230,92 @@ async function runBatch() {
   $('stopBtn').disabled = false;
   $('pickFolder').disabled = true;
 
-  log(`▶ Bắt đầu xử lý ${images.length} ảnh`, 'success');
+  log(`▶ Bắt đầu xử lý ${images.length} ảnh × ${versionsPerImage} video = ${totalJobs} job`, 'success');
 
   await ensureContentScript(tab.id);
 
+  let jobIdx = 0;
+  let canUseRegen = false;   // post hiện tại có video sống → version sau dùng regenerate
+  let needResetTab = false;  // lần render kế cần reset tab trước
+
+  outer:
   for (let i = 0; i < images.length; i++) {
     if (stopRequested) { log('⏸ Đã dừng theo yêu cầu', 'warn'); break; }
 
     const { name, handle } = images[i];
     const baseName = name.replace(/\.[^.]+$/, '');
-    setProgress(`[${i + 1}/${images.length}] ${name}`, (i / images.length) * 100);
 
-    if (skipExisting && await videoExists(name)) {
-      log(`⏭ Bỏ qua: ${name} (đã có ${baseName}.mp4)`, 'info');
-      stats.skipped++;
-      updateStats();
-      continue;
-    }
+    for (let v = 1; v <= versionsPerImage; v++) {
+      if (stopRequested) { log('⏸ Đã dừng theo yêu cầu', 'warn'); break outer; }
 
-    const file = await handle.getFile();
-    const userPrompt = promptTpl
-      .replaceAll('{filename}', baseName)
-      .replaceAll('{index}', String(i + 1));
+      jobIdx++;
+      const outName = versionsPerImage === 1 ? baseName : `${baseName}_${v}`;
+      const label = versionsPerImage === 1 ? name : `${name} (v${v}/${versionsPerImage})`;
+      setProgress(`[${jobIdx}/${totalJobs}] ${label}`, ((jobIdx - 1) / totalJobs) * 100);
 
-    let success = false;
-    for (let attempt = 0; attempt <= maxRetry; attempt++) {
-      if (stopRequested) break;
-      try {
-        if (attempt > 0) {
-          log(`🔄 Retry ${attempt}/${maxRetry}: ${name}`, 'warn');
-          await resetGrokTab(tab.id, resetUrl);
-        }
-        log(`▶ ${name}: upload + generate...`, 'info');
-        const r = await processOneImage(tab.id, file, userPrompt, timeoutSec * 1000);
-        log(`📥 Nhận video: ${r.videoUrl.split('?')[0].split('/').pop()} (${fmtSize(r.size)})`, 'info');
-        const written = await saveVideoBase64(r.videoData, r.videoMime, baseName);
-        log(`✅ Lưu xong: ${baseName}.mp4 (${fmtSize(written)})`, 'success');
-        success = true;
-        break;
-      } catch (e) {
-        log(`❌ ${name} (lần ${attempt + 1}): ${e.message}`, 'error');
+      if (skipExisting && await videoExistsByBase(outName)) {
+        log(`⏭ Bỏ qua: ${label} (đã có ${outName}.mp4)`, 'info');
+        stats.skipped++;
+        updateStats();
+        continue;
       }
+
+      const file = await handle.getFile();
+      const userPrompt = promptTpl
+        .replaceAll('{filename}', baseName)
+        .replaceAll('{index}', String(i + 1))
+        .replaceAll('{version}', String(v));
+
+      let success = false;
+      for (let attempt = 0; attempt <= maxRetry; attempt++) {
+        if (stopRequested) break;
+        const isRetry = attempt > 0;
+        const useRegen = canUseRegen && !isRetry;
+        try {
+          if (useRegen) {
+            if (delaySec > 0) await sleep(delaySec * 1000);
+            log(`▶ ${label}: regenerate trên post hiện tại...`, 'info');
+            const r = await regenerateOnSamePost(tab.id, userPrompt, timeoutSec * 1000);
+            log(`📥 Nhận video: ${r.videoUrl.split('?')[0].split('/').pop()} (${fmtSize(r.size)})`, 'info');
+            const written = await saveVideoBase64(r.videoData, r.videoMime, outName);
+            log(`✅ Lưu xong: ${outName}.mp4 (${fmtSize(written)})`, 'success');
+          } else {
+            if (isRetry) log(`🔄 Retry ${attempt}/${maxRetry}: ${label}`, 'warn');
+            if (needResetTab || isRetry) {
+              await resetGrokTab(tab.id, resetUrl);
+            }
+            if (delaySec > 0 && jobIdx > 1) await sleep(delaySec * 1000);
+            log(`▶ ${label}: upload + generate...`, 'info');
+            const r = await processOneImage(tab.id, file, userPrompt, timeoutSec * 1000);
+            log(`📥 Nhận video: ${r.videoUrl.split('?')[0].split('/').pop()} (${fmtSize(r.size)})`, 'info');
+            const written = await saveVideoBase64(r.videoData, r.videoMime, outName);
+            log(`✅ Lưu xong: ${outName}.mp4 (${fmtSize(written)})`, 'success');
+          }
+          success = true;
+          break;
+        } catch (e) {
+          log(`❌ ${label} (lần ${attempt + 1}): ${e.message}`, 'error');
+          // Sau khi lỗi: post có thể hỏng → lần sau phải upload lại từ đầu
+          canUseRegen = false;
+          needResetTab = true;
+        }
+      }
+
+      if (success) {
+        stats.done++;
+        canUseRegen = true;     // còn version nữa của ảnh này thì dùng regenerate
+        needResetTab = false;
+      } else {
+        stats.failed++;
+        canUseRegen = false;
+        needResetTab = true;
+      }
+      updateStats();
     }
 
-    if (success) stats.done++;
-    else stats.failed++;
-    updateStats();
-
-    if (i < images.length - 1 && !stopRequested) {
-      await resetGrokTab(tab.id, resetUrl);
-      if (delaySec > 0) await sleep(delaySec * 1000);
-    }
+    // Hết các version của ảnh hiện tại → ảnh sau bắt buộc upload mới
+    canUseRegen = false;
+    needResetTab = true;
   }
 
   setProgress(`Xong. ✓${stats.done} ⏭${stats.skipped} ✗${stats.failed} / ${stats.total}`, 100);
@@ -294,7 +343,7 @@ $('stopBtn').addEventListener('click', () => {
 });
 $('clearLogBtn').addEventListener('click', () => { $('log').innerHTML = ''; });
 
-['prompt', 'timeout', 'retry', 'delay', 'skipExisting', 'resetUrl'].forEach(id => {
+['prompt', 'timeout', 'retry', 'delay', 'versions', 'skipExisting', 'resetUrl'].forEach(id => {
   $(id).addEventListener('change', saveSettings);
 });
 
